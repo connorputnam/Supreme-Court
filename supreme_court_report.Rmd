@@ -1,0 +1,278 @@
+---
+title: "supreme_court_report"
+author: "Connor Putnam"
+date: "2/14/2021"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(jsonlite)
+library(ggthemes)
+library(anytime)
+library(kableExtra)
+library(RSQLite)
+library(DBI)
+library(pander)
+```
+
+# Obtain
+
+The first step in this project was to import the data, with the focus being on the questions regarding the United States Supreme Court. The data used can be found at the following Git repository: [supreme court transcripts](https://github.com/walkerdb/supreme_court_transcripts). The repo contains records for every supreme court case see by the justices of the United States Supreme Court. It is spread throughout 15,375 `JSON` files and takes up 3.17 GB. In order to make this usable for data analysis it must be converted into a data frame with the relevant information withdrawn.
+
+```{r include=FALSE}
+supreme2 <- read.csv("data/unnested_transcripts.csv")
+
+#There was an issue with one of Obamas justices, so the code below fixes that
+supreme2 <- supreme2 %>% 
+  mutate_all(na_if,"") %>%
+  mutate(appointing_president = replace_na(appointing_president, "Barack Obama")) %>%
+  filter(member.name != "Edward D. White")
+```
+
+# Scrub
+
+In order to clean everything up the first step was to upload the data into python. This was challenging given the amount of **JSON** files present. The next task was to create a folder with all of the **JSON** files in it. Then python was used to iterated through all the files, this process can be seen in the code snippet below.
+
+```{python eval=FALSE, include=TRUE}
+def load_json_files(list_of_files):
+    vals = []
+
+    list_of_files = [x for x in list_of_files if ".json" in x]
+    for i, file in enumerate(list_of_files):
+        print(i, len(list_of_files), file)
+        with open(
+            f"/Users/connorputnam/Documents/CS512/cases/{file}", errors="ignore"
+        ) as f:
+            d = json.load(f)
+            vals.append(d)
+    return vals
+```
+
+
+After that I was interested in the files that deal with the **JSON** key `decisions`.  Approximately 16000 of the **JSON** files were dealing with the individual case decisions. The following code indexed all the **JSON** not containing the key `decisions` into a list and then subtracted those files from the list containing all the files and stored them under the variable `val_updated`.
+
+```{python eval=FALSE, include=TRUE}
+    df2 = df[df["decisions"].notna()]  # drop them
+    list(df2.index)  # list of number to feed to vals
+    val_updated = [vals[i] for i in list(df2.index)]  # feed them
+```
+
+After filtering out those files the next was nest was to flatten the **JSON** data by using the `json_normalize` function in the `pandas` library. Now the data was in a useable `pandas` dataframe. The code below shows this, additionally the `record_path` argument allows you to *unnest* the **JSON** data to obtain what you are looking for.
+
+```{python eval=FALSE, include=TRUE}
+    df_decisions2 = pd.json_normalize(
+        val_updated, record_path=["decisions", "votes"], errors="ignore"
+    )
+```
+
+In addition to the data obtained from the code above I was also interested in obtaining the information contained in the `member.roles` column of the `pandas` data frame `df_decisions2`. This column was expanded by using the `concat` function which is also found in the `pandas` package.
+
+```{python eval=FALSE, include=TRUE}
+    df_appoint = (
+        pd.concat(
+            {i: pd.DataFrame(x) for i, x in df_decisions2.pop("member.roles").items()}
+        )
+        .reset_index(level=1, drop=True)
+        .join(df_decisions2, lsuffix="_left")
+        .reset_index(drop=True)
+    )
+```
+
+
+The last step in getting the **JSON** file in a useable format was to convert the newly created `pandas` data frame into a `.csv` file, suitable for analysis, by using the `to.csv` function.
+
+Once the files were in a usable format, **csv** file, it was uploaded into `R` and the `tidyverse` package was used to perform data manipulation and get the desired information for visualization.
+
+
+```{r echo=FALSE}
+supreme <- supreme2 %>% 
+  select(X, appointing_president, role_title, date_end, 
+        id, date_start, ideology, seniority, opinion_type, 
+        vote, member.ID, member.last_name, member.length_of_service, 
+        member.view_count, member.identifier, member.name)
+```
+
+# Explore
+
+There was not much exploration to do in this project besides a few summary statistics. It can be argued that visualizations might be under the umbrella of exploring but I choose to put those in the modeling section do to the complexity of them and because there was no model building in this assignment. So, for this section I just included a couple summary statistics as well a graph that helped influence my questions.
+
+```{r echo=FALSE, message=TRUE, warning=FALSE}
+summary(supreme$ideology) %>% 
+  pander(caption = "Summary Statistics for Ideology")
+summary(supreme$member.length_of_service) %>% 
+  pander(caption = "Summary Statistics for Member Length of Service(Days)")
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=5}
+ggplot(supreme, aes(vote, fill = vote)) + 
+  geom_bar() +
+  theme_fivethirtyeight() +
+  ggtitle("How Often are Judges in the Majority",
+          subtitle = "From 1790 - 2020") +
+  theme(plot.title = element_text(size = 15, face = "bold"))
+```
+
+
+# Model
+
+## Three Data Analysis Questions
+
+1. Which president has appointed the most judges? And have Republican or Democratic Presidents picked the most Judges? (Here just considering the post World War 2 era given that before then there were more parties like the Wigs and the parties do not fit into the modern "liberal' or "conservative” classifications)
+
+2. In modern history how do the ideologies of judges compare to one another? Are Republican appointed judges more ideological or are Democratic appointed judges more ideological? Are any of the judge's ideologies the opposite of what one would expect?
+
+3. Has the level of ideology changed throughout different times in American history?
+
+### Question 1
+
+For the first question I performed variable selection as well as some data manipulation using the `dpylr` functions such `filter`, `mutate`, `case_when` and `group_by` in order to make classifications. A sample of the created dataset is shown below:
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+ww2 <- supreme %>%
+  filter(appointing_president == "Franklin D. Rossevelt" | appointing_president == "Harry S. Truman"|
+         appointing_president == "Dwight D. Eisenhower" | appointing_president == "John F. Kennedy"|
+         appointing_president == "Lyndon B. Johnson" | appointing_president == "Richard Nixon"|
+         appointing_president == "Gerald Ford"| appointing_president == "Jimmy Carter" |
+         appointing_president == "Ronald Reagan"| appointing_president == "George H. W. Bush"|
+         appointing_president == "Bill Clinton"| appointing_president == "George W. Bush"|
+         appointing_president == "Barack Obama"|  appointing_president == "Donald J. Trump") %>%
+  mutate(presidental_year = case_when(appointing_president == "Donald J. Trump" ~ 2017,
+                                      appointing_president == "Barack Obama" ~ 2009,
+                                      appointing_president == "George W. Bush" ~ 2001,
+                                      appointing_president == "Bill Clinton" ~ 1993,
+                                      appointing_president == "George H. W. Bush" ~ 1989,
+                                      appointing_president == "Ronald Reagan" ~ 1981,
+                                      appointing_president == "Jimmy Carter" ~ 1977,
+                                      appointing_president == "Gerald Ford" ~ 1974,
+                                      appointing_president == "Richard Nixon" ~ 1969,
+                                      appointing_president == "Lyndon B. Johnson" ~ 1963,
+                                      appointing_president == "John F. Kennedy" ~ 1961,
+                                      appointing_president == "Dwight D. Eisenhower" ~ 1953,
+                                      appointing_president == "Harry S. Truman" ~ 1945,
+                                      appointing_president == "Franklin D. Roosevelt" ~ 1933)) %>%
+  mutate(party = as.factor(case_when(appointing_president == "Donald J. Trump" ~ "Republican",
+                                      appointing_president == "Barack Obama" ~ "Democrat",
+                                      appointing_president == "George W. Bush" ~ "Republican",
+                                      appointing_president == "Bill Clinton" ~ "Democrat",
+                                      appointing_president == "George H. W. Bush" ~ "Republican",
+                                      appointing_president == "Ronald Reagan" ~ "Republican",
+                                      appointing_president == "Jimmy Carter" ~ "Democrat",
+                                      appointing_president == "Gerald Ford" ~ "Republican",
+                                      appointing_president == "Richard Nixon" ~ "Republican",
+                                      appointing_president == "Lyndon B. Johnson" ~ "Democrat",
+                                      appointing_president == "John F. Kennedy" ~ "Democrat",
+                                      appointing_president == "Dwight D. Eisenhower" ~ "Republican",
+                                      appointing_president == "Harry S. Truman" ~ "Democrat",
+                                      appointing_president == "Franklin D. Roosevelt" ~ "Democrat"))) %>%
+  mutate(Ideology = as.factor(case_when(party == "Republican" ~ "Conservative",
+                                       party == "Democrat" ~ "Liberal")))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ww2_bar <- ww2 %>%
+  group_by(presidental_year, appointing_president, party) %>%
+  summarise(unique(member.name)) %>%
+              rename(JudgeFullName = "unique(member.name)") %>%
+              extract(appointing_president, c("FirstName", "LastName"), "([^ ]+) (.*)") %>%
+              arrange(desc(presidental_year))
+
+kable(head(ww2_bar)) %>% kable_styling(latex_options="scale_down")
+
+```
+
+Based on the visualization below it looks like some presidents get to appoint more judges than others. In particular it appears as though Republican judges have been able to appoint more judges than Democrats. President Eisenhower(R) appointed the most judges at five whereas all of the democratic presidents besides Truman only appointed 2 judges. Note that Ford although a Republican did not serve a full term in office. 
+
+*At the time of this project the data did not contain any decisions made by the newly Trump appointed judge Amy Coney Barrett.
+
+```{r echo=FALSE}
+ggplot(ww2_bar, aes(fct_reorder(LastName, presidental_year), fill = party)) +
+  geom_bar() +
+  scale_fill_manual(values=c("#26b3f2", "#ec1e26")) +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.7)) +
+  ggtitle("Number of Judge Appointments by President",
+          subtitle = "Presidents Listed in Chronological Order")
+```
+
+### Question 2
+
+In order to address the next question, I used similar data manipulation techniques as in the first question. Though this time I was interested in the ideology score of every judge on every one of the recorded decisions. To do this I took an average of every judge’s ideology and then plotted them below. Where negative values indicate more liberal leaning and positive values indicate more conservative leanings. 
+
+```{r include=FALSE}
+ww2_line <- ww2 %>%
+  select(appointing_president, ideology, member.last_name, 
+         member.length_of_service, presidental_year, party, member.name, date_start, Ideology) %>%
+  group_by(member.last_name) %>%
+  mutate(average_ideology = mean(ideology)) %>%
+  distinct(member.name, .keep_all = TRUE) %>%
+  arrange(desc(presidental_year))
+  #summarise(unique(member.name)) %>%
+  #rename(JudgeFullName = "unique(member.name)")
+  
+ww2_line
+```
+
+
+```{r echo=FALSE}
+ggplot(ww2_line) +
+  geom_bar(aes(reorder(member.last_name, date_start), 
+               average_ideology, fill = Ideology),
+           stat = "identity") +
+  scale_fill_manual(values=c("#ec1e26", "#26b3f2")) +
+  # geom_errorbar(aes(member.last_name, average_ideology, 
+  #                   ymin = average_ideology + sd(ideology) , 
+  #                   ymax = average_ideology - sd(ideology))) +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  ggtitle("Average Ideology for Supreme Court Justices", 
+          subtitle = "Ordered by most recently appointed to latest appointed") +
+  theme(axis.text.y = element_text(size = 8)) #+
+  #scale_fill_discrete(name = "Ideology")
+```
+
+On the conversative side it looks like both `Thomas` and `Rehnquist` were both very much to the right and on the liberal side it looks like `Marshall` was very much to the left. I am particularly interested in the judges that have a `0` ranking, such as `Vinson` or `Blackmun`. To me a judge that is impartial to one side of the spectrum is a good thing, but it seems as though that is a pretty rare occurrence.
+
+```{r include=FALSE}
+ggplot(ww2_line) +
+  geom_density(aes(ideology, fill = Ideology), alpha = 0.5, position = "stack") +
+  scale_fill_manual(values=c("#ec1e26", "#26b3f2")) +  theme_fivethirtyeight() +
+  geom_vline(xintercept = mean(ww2_line$ideology))
+```
+
+
+```{r echo=FALSE}
+eras <- supreme2 %>%
+  mutate(start_date = anytime(date_start)) %>%
+  #distinct(member.name, .keep_all = TRUE) %>%
+  select(appointing_president, member.name, start_date, 
+         date_end, ideology, member.length_of_service, date_start) %>%
+  arrange(desc(start_date)) %>%
+  mutate(era = as.factor(case_when(date_start <= -4102444800 ~ "1790 - 1839",
+                                   (date_start > -4102444800 & date_start <= -2524521600) ~ "1840 - 1889",
+                                   (date_start > -2524521600 & date_start <= -946771200) ~ "1889 - 1940",
+                                    (date_start > -2524521600 & date_start <= 662688000) ~ "1941 - 1990"))) %>%
+  drop_na(era)
+#eras
+```
+
+### Question 3
+
+The last question I tasked myself with was trying to gain some insight into if the ideology rates have changed throughout American history. Here is an I used all the ideology scoring available in the data. In addition to this there was data consisting of system time data representing the data in which a judge was appointed and another representing the time they retired I then took that data and aggregate into fifty-year time frame. I choose to stop at the year 1990, because the last judge to leave the bench was appointed in 1990.
+
+From the plot below it can be seen that indeed the modern era of American history has seen much more ideologically driven judges than in previous eras.
+
+```{r echo=FALSE}
+ggplot(eras, aes(ideology, member.length_of_service)) +
+  geom_jitter(alpha = 0.5, color = "steelblue") +
+  facet_wrap(~era, ncol = 2) +
+  theme_fivethirtyeight() +
+  ggtitle("Polarization of the Surpreme Court",
+          subtitle = "Split into Fifty Year Increments from 1790 - 1990")
+```
+
+# Interpreting
+
+For this last section I will review the process I went through in the previous steps, I discussed answers to my questions and provided context throughout the report.
+After going through everything the data wrangling portion of the project was the most challenging and required a good amount of time. I had to further unnest the **JSON** files so that way I got the right data for the questions I wanted to ask. The main challenge with the visualizations was adding in supplementary data, (i.e., president's party affiliation), and to wrangle the data into a columns that could be visualized. Grouping variables were key to this segment of the report. 
